@@ -1,0 +1,74 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#include "Match.h"
+
+namespace m {
+namespace detail {
+
+bool is_assignable_to_interface(const DexType* type, const DexType* iface) {
+  if (type == iface) {
+    return true;
+  }
+  auto* cls = type_class(type);
+  if (cls != nullptr) {
+    for (auto* extends : *cls->get_interfaces()) {
+      if (is_assignable_to_interface(extends, iface)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool is_assignable_to(const DexType* child, const DexType* parent) {
+  // Check class hierarchy
+  const auto* super = child;
+  while (super != nullptr) {
+    if (parent == super) {
+      return true;
+    }
+    auto* const cls = type_class(super);
+    if (cls == nullptr) {
+      break;
+    }
+    super = cls->get_super_class();
+  }
+  // Check interface hierarchy
+  DexClass* parent_cls = type_class(parent);
+  return (parent_cls != nullptr) && is_interface(parent_cls) &&
+         is_assignable_to_interface(child, parent);
+}
+
+bool is_default_constructor(const DexMethod* meth) {
+  if (!is_static(meth) && method::is_constructor(meth) &&
+      method::has_no_args(meth) && method::has_code(meth)) {
+    auto ii = InstructionIterable(meth->get_code());
+    auto it = ii.begin();
+    const auto end = ii.end();
+
+    if (it == end) {
+      return false;
+    }
+    if (it->insn->opcode() != OPCODE_INVOKE_DIRECT) {
+      return false;
+    }
+    ++it;
+    if (it == end) {
+      return false;
+    }
+    if (it->insn->opcode() != OPCODE_RETURN_VOID) {
+      return false;
+    }
+    ++it;
+    return it == end;
+  }
+  return false;
+}
+
+} // namespace detail
+} // namespace m

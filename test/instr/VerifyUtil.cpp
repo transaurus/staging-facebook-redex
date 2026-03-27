@@ -1,0 +1,269 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#include <algorithm>
+#include <boost/algorithm/string/predicate.hpp>
+#include <boost/algorithm/string/replace.hpp>
+// NOLINTNEXTLINE(facebook-unused-include-check)
+#include <boost/regex.hpp>
+#include <filesystem>
+#include <fstream>
+#include <gtest/gtest.h>
+#include <sstream>
+#include <string_view>
+
+#include "ControlFlow.h"
+#include "Debug.h"
+#include "DexInstruction.h"
+#include "IRCode.h"
+// NOLINTNEXTLINE(facebook-unused-include-check)
+#include "SanitizersConfig.h"
+#include "Show.h"
+#include "VerifyUtil.h"
+#include "Walkers.h"
+
+int find_class_idx(const DexClasses& classes, std::string_view name) {
+  for (size_t i = 0; i < classes.size(); ++i) {
+    if (name == classes[i]->str()) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+DexClass* find_class_named(const DexClasses& classes, std::string_view name) {
+  auto it = std::find_if(classes.begin(),
+                         classes.end(),
+                         [&name](DexClass* cls) { return name == cls->str(); });
+  return it == classes.end() ? nullptr : *it;
+}
+
+DexClass* find_class_named(const DexClasses& classes,
+                           const std::function<bool(const char*)>& matcher) {
+  auto it =
+      std::find_if(classes.begin(), classes.end(), [&matcher](DexClass* cls) {
+        return matcher(cls->get_name()->c_str());
+      });
+  return it == classes.end() ? nullptr : *it;
+}
+
+DexField* find_ifield_named(const DexClass& cls, std::string_view name) {
+  auto fields = cls.get_ifields();
+  auto it =
+      std::find_if(fields.begin(), fields.end(), [&name](const DexField* f) {
+        return name == f->str();
+      });
+  return it == fields.end() ? nullptr : *it;
+}
+
+DexField* find_sfield_named(const DexClass& cls, std::string_view name) {
+  auto fields = cls.get_sfields();
+  auto it =
+      std::find_if(fields.begin(), fields.end(), [&name](const DexField* f) {
+        return name == f->str();
+      });
+  return it == fields.end() ? nullptr : *it;
+}
+
+DexField* find_field_named(const DexClass& cls, std::string_view name) {
+  auto* ret = find_ifield_named(cls, name);
+  if (ret != nullptr) {
+    return ret;
+  }
+  return find_sfield_named(cls, name);
+}
+
+DexMethod* find_vmethod_named(const DexClass& cls, std::string_view name) {
+  auto vmethods = cls.get_vmethods();
+  auto it = std::find_if(vmethods.begin(),
+                         vmethods.end(),
+                         [&name](DexMethod* m) { return name == m->str(); });
+  return it == vmethods.end() ? nullptr : *it;
+}
+
+DexMethod* find_vmethod(const DexClass& cls,
+                        std::string_view name,
+                        const DexProto* proto) {
+  auto vmethods = cls.get_vmethods();
+  auto it = std::find_if(vmethods.begin(), vmethods.end(), [&](DexMethod* m) {
+    return name == m->str() && m->get_proto() == proto;
+  });
+  return it == vmethods.end() ? nullptr : *it;
+}
+
+DexMethod* find_dmethod_named(const DexClass& cls, std::string_view name) {
+  auto dmethods = cls.get_dmethods();
+  auto it = std::find_if(dmethods.begin(),
+                         dmethods.end(),
+                         [&name](DexMethod* m) { return name == m->str(); });
+  return it == dmethods.end() ? nullptr : *it;
+}
+
+DexMethod* find_method_named(const DexClass& cls, std::string_view name) {
+  auto* ret = find_dmethod_named(cls, name);
+  if (ret != nullptr) {
+    return ret;
+  }
+  return find_vmethod_named(cls, name);
+}
+
+DexOpcodeMethod* find_invoke(const DexMethod* m,
+                             DexOpcode opcode,
+                             std::string_view target_mname,
+                             DexType* receiver) {
+  auto insns = m->get_dex_code()->get_instructions();
+  return find_invoke(
+      insns.begin(), insns.end(), opcode, target_mname, receiver);
+}
+
+DexOpcodeMethod* find_invoke(std::vector<DexInstruction*>::iterator begin,
+                             std::vector<DexInstruction*>::iterator end,
+                             DexOpcode opcode,
+                             std::string_view target_mname,
+                             DexType* receiver) {
+  auto it = std::find_if(
+      begin, end, [opcode, target_mname, receiver](DexInstruction* insn) {
+        if (insn->opcode() != opcode) {
+          return false;
+        }
+        auto* meth = dynamic_cast<DexOpcodeMethod*>(insn)->get_method();
+        if ((receiver != nullptr) && meth->get_class() != receiver) {
+          return false;
+        }
+        const auto* mname =
+            dynamic_cast<DexOpcodeMethod*>(insn)->get_method()->get_name();
+        return mname == DexString::get_string(target_mname);
+      });
+  return it == end ? nullptr : dynamic_cast<DexOpcodeMethod*>(*it);
+}
+
+size_t find_num_invoke(const DexMethod* m,
+                       DexOpcode opcode,
+                       std::string_view target_mname,
+                       DexType* receiver) {
+  size_t num = 0;
+  for (const auto& insn : m->get_dex_code()->get_instructions()) {
+    if (insn->opcode() != opcode) {
+      continue;
+    }
+    auto* meth = dynamic_cast<DexOpcodeMethod*>(insn)->get_method();
+    if ((receiver != nullptr) && meth->get_class() != receiver) {
+      continue;
+    }
+    const auto* mname =
+        dynamic_cast<DexOpcodeMethod*>(insn)->get_method()->get_name();
+    if (mname == DexString::get_string(target_mname)) {
+      num++;
+    }
+  }
+  return num;
+}
+
+// Given a semicolon delimited list of extracted files from the APK, return a
+// map of the original APK's file path to its path on disk.
+ResourceFiles decode_resource_paths(const char* location) {
+  ResourceFiles files;
+  std::istringstream input;
+  input.str(location);
+
+  for (std::string file_path; std::getline(input, file_path, ':');) {
+    auto pos = file_path.rfind('/');
+    always_assert(pos >= 0 && pos + 1 < file_path.length());
+    auto original_name = file_path.substr(pos + 1);
+    // Undo simple escaping at buck_imports/redex_utils
+    boost::replace_all(original_name, "zC", ":");
+    boost::replace_all(original_name, "zS", "/");
+    boost::replace_all(original_name, "zZ", "z");
+    files.emplace(original_name, file_path);
+    always_assert_log(std::filesystem::exists(file_path),
+                      "%s -> %s does not exist!",
+                      original_name.c_str(),
+                      file_path.c_str());
+  }
+  return files;
+}
+
+DexInstruction* find_instruction(DexMethod* m, DexOpcode opcode) {
+  auto& insns = m->get_dex_code()->get_instructions();
+  auto it =
+      std::find_if(insns.begin(), insns.end(), [opcode](DexInstruction* insn) {
+        return insn->opcode() == opcode;
+      });
+  return it == insns.end() ? nullptr : *it;
+}
+
+void verify_class_merged(const DexClass* cls, size_t num_dmethods) {
+  if (cls == nullptr) {
+    ASSERT_EQ(num_dmethods, 0)
+        << "cls is null, can not have " << num_dmethods << " dmethods\n";
+    return;
+  }
+  ASSERT_EQ(cls->get_interfaces()->size(), 0)
+      << "cls " << show(cls) << " has interfaces "
+      << show(cls->get_interfaces()) << "\n";
+  ASSERT_EQ(cls->get_super_class(), type::java_lang_Object())
+      << "cls " << show(cls) << " has super_cls "
+      << show(cls->get_super_class()) << "\n";
+  auto dmethods = cls->get_dmethods();
+  ASSERT_EQ(dmethods.size(), num_dmethods)
+      << show(cls) << " has " << dmethods.size() << " dmethods\n";
+  for (auto* m : dmethods) {
+    ASSERT_FALSE(method::is_init(m));
+    ASSERT_NE(m->c_str(), "<init>");
+  }
+  const auto& vmethods = cls->get_vmethods();
+  ASSERT_TRUE(vmethods.empty())
+      << show(cls) << " has " << vmethods.size() << " vmethods\n";
+}
+
+void dump_cfgs(bool is_prev_verify,
+               const DexClass* cls,
+               const std::function<bool(const DexMethod*)>& filter) {
+  using namespace cfg;
+  const char* base_filename =
+      std::getenv("REDEX_INSTRUMENT_TEST_BASE_FILENAME");
+  if (base_filename == nullptr) {
+    return;
+  }
+
+  std::ofstream file((is_prev_verify ? "before_" : "after_") +
+                     std::string(base_filename));
+  boost::regex addr("\\[0x[0-9a-f]+\\] ");
+  walk::methods(std::vector<const DexClass*>{cls}, [&](DexMethod* method) {
+    if (!filter(method)) {
+      return;
+    }
+
+    file << "============================================================\n";
+    file << (is_prev_verify ? "Before: " : "After: ") << show(method) << '\n';
+    file << "============================================================\n";
+
+    method->balloon();
+    IRCode* code = method->get_code();
+    code->build_cfg();
+    cfg::ControlFlowGraph& cfg = code->cfg();
+    cfg.write_dot_format(file);
+
+    // Dump CFG wihout address parts for easier diff between before/after files.
+    std::stringstream ss;
+    ss << show(cfg) << "\n\n";
+    file << boost::regex_replace(ss.str(), addr, "");
+  });
+}
+
+std::string stringify_for_comparision(DexMethod* method) {
+  method->balloon();
+  auto* code = method->get_code();
+  for (auto it = code->begin(); it != code->end();) {
+    if (it->type == MFLOW_POSITION) {
+      it = code->erase_and_dispose(it);
+    } else {
+      it++;
+    }
+  }
+  return assembler::to_string(code);
+}

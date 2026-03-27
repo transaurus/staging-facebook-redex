@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#pragma once
+
+#include "ConcurrentContainers.h"
+#include "ControlFlow.h"
+#include "DeterministicContainers.h"
+#include "LiveRange.h"
+#include "MethodOverrideGraph.h"
+#include "Pass.h"
+
+#include "TypeInference.h"
+#include <utility>
+
+using TypeEnvironments =
+    UnorderedMap<const IRInstruction*, type_inference::TypeEnvironment>;
+
+namespace mog = method_override_graph;
+
+/*
+ * This pass checks that typedef annotations usages are value safe
+ * https://developer.android.com/studio/write/annotations#enum-annotations
+ */
+class TypedefAnnoCheckerPass : public Pass {
+ public:
+  TypedefAnnoCheckerPass() : Pass("TypedefAnnoCheckerPass") {}
+
+  redex_properties::PropertyInteractions get_property_interactions()
+      const override {
+    return redex_properties::simple::preserves_all();
+  }
+
+  struct Config {
+    const DexType* int_typedef{nullptr};
+    const DexType* str_typedef{nullptr};
+    size_t max_patcher_iteration{10};
+    UnorderedSet<const DexType*> generated_type_annos;
+    UnorderedSet<std::string> do_not_check_list;
+    bool skip_anonymous_classes{true};
+  };
+
+  void bind_config() override {
+    bind("int_typedef", {}, m_config.int_typedef);
+    bind("str_typedef", {}, m_config.str_typedef);
+    bind("max_patcher_iteration",
+         10,
+         m_config.max_patcher_iteration,
+         "Maximum number of Typedef annotation patcher iterations");
+    bind("generated_type_annos",
+         {},
+         m_config.generated_type_annos,
+         "Denote annotation types that are flagging generated methods.");
+    bind("do_not_check_list",
+         {},
+         m_config.do_not_check_list,
+         "A list of known symbol/methods used as generics that we cannot "
+         "enforce safety checks on.");
+  }
+
+  explicit TypedefAnnoCheckerPass(Config config)
+      : Pass("TypedefAnnoCheckerPass"), m_config(std::move(config)) {}
+
+  void run_pass(DexStoresVector& stores,
+                ConfigFiles& conf,
+                PassManager& mgr) override;
+
+ private:
+  void gather_typedef_values(
+      const DexClass* cls,
+      InsertOnlyConcurrentMap<const DexClass*, UnorderedSet<const DexString*>>&
+          strdef_constants,
+      InsertOnlyConcurrentMap<const DexClass*, UnorderedSet<uint64_t>>&
+          intdef_constants);
+
+  Config m_config;
+  friend struct TypedefAnnoCheckerTest;
+};
+
+struct CheckerStats {
+  std::string m_errors;
+  size_t m_count{0};
+
+  explicit CheckerStats(std::string error)
+      : m_errors(std::move(error)), m_count(1) {}
+  CheckerStats() = default;
+
+  CheckerStats& operator+=(const CheckerStats& other) {
+    m_count += other.m_count;
+    if (m_errors.empty()) {
+      m_errors = other.m_errors;
+    } else {
+      m_errors = m_errors + other.m_errors;
+    }
+    return *this;
+  }
+};
+
+using StrDefConstants =
+    InsertOnlyConcurrentMap<const DexClass*, UnorderedSet<const DexString*>>;
+
+using IntDefConstants =
+    InsertOnlyConcurrentMap<const DexClass*, UnorderedSet<uint64_t>>;
+
+class TypedefAnnoChecker {
+ public:
+  explicit TypedefAnnoChecker(
+      const StrDefConstants& strdef_constants,
+      const IntDefConstants& intdef_constants,
+      TypedefAnnoCheckerPass::Config config,
+      const method_override_graph::Graph& method_override_graph)
+      : m_config(std::move(config)),
+        m_strdef_constants(strdef_constants),
+        m_intdef_constants(intdef_constants),
+        m_method_override_graph(method_override_graph) {}
+
+  bool is_value_of_opt(const DexMethod* m);
+  bool is_delegate(const DexMethod* m);
+  bool is_generated(const DexMethod* m) const;
+  bool should_not_check(const DexMethod* m) const;
+
+  void run(DexMethod* m);
+
+  void check_instruction(
+      DexMethod* m,
+      const type_inference::TypeInference* inference,
+      IRInstruction* insn,
+      const boost::optional<const DexType*>& return_annotation,
+      live_range::UseDefChains* ud_chains,
+      TypeEnvironments& envs);
+
+  bool check_typedef_value(DexMethod* m,
+                           const boost::optional<const DexType*>& annotation,
+                           live_range::UseDefChains* ud_chains,
+                           IRInstruction* insn,
+                           const src_index_t src,
+                           const type_inference::TypeInference* inference,
+                           TypeEnvironments& envs);
+
+  bool complete() { return m_good; }
+
+  std::string error() { return m_error; }
+
+ private:
+  void add_error(const std::string& error, bool double_newline = true);
+  std::string format_source_loc(const IRInstruction* insn) const;
+
+  bool m_good{true};
+  std::string m_error;
+  TypedefAnnoCheckerPass::Config m_config;
+  UnorderedMap<const IRInstruction*, const DexPosition*> m_insn_positions;
+
+  const StrDefConstants& m_strdef_constants;
+  const IntDefConstants& m_intdef_constants;
+  const method_override_graph::Graph& m_method_override_graph;
+};

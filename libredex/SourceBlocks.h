@@ -1,0 +1,666 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "ControlFlow.h"
+#include "CppUtil.h"
+#include "Debug.h"
+#include "DeterministicContainers.h"
+#include "IRCode.h"
+#include "IRList.h"
+#include "SourceBlocksUtils.h"
+
+class DexMethod;
+class DexStore;
+class ScopedMetrics;
+
+// Must match DexStore.
+using DexStoresVector = std::vector<DexStore>;
+
+namespace call_graph {
+class Graph;
+} // namespace call_graph
+
+namespace source_blocks {
+
+using namespace cfg;
+
+namespace impl {
+
+struct BlockAccessor {
+  static void push_source_block(Block* b,
+                                std::unique_ptr<SourceBlock> src_block) {
+    auto it = b->get_first_non_param_loading_insn();
+    if (it != b->end() &&
+        (opcode::is_a_move_result_pseudo(it->insn->opcode()) ||
+         opcode::is_a_move_result(it->insn->opcode()))) {
+      ++it;
+    }
+    auto* mie = new MethodItemEntry(std::move(src_block));
+    if (it == b->end()) {
+      b->m_entries.push_back(*mie);
+    } else {
+      b->m_entries.insert_before(it, *mie);
+    }
+  }
+
+  static IRList::iterator insert_source_block_after(
+      Block* b,
+      const IRList::iterator& it,
+      std::unique_ptr<SourceBlock> src_block) {
+    auto* mie = new MethodItemEntry(std::move(src_block));
+    return b->m_entries.insert_after(it, *mie);
+  }
+};
+
+inline std::vector<Edge*> get_sorted_edges(Block* b) {
+  auto succs = b->succs().to_vector();
+  std::sort(succs.begin(), succs.end(), [](const Edge* lhs, const Edge* rhs) {
+    if (lhs->type() != rhs->type()) {
+      return lhs->type() < rhs->type();
+    }
+    switch (lhs->type()) {
+    case EDGE_GOTO:
+      redex_assert(lhs == rhs);
+      return false;
+    case EDGE_BRANCH: {
+      auto lhs_case = lhs->case_key();
+      auto rhs_case = rhs->case_key();
+      if (!lhs_case) {
+        redex_assert(!rhs_case);
+        redex_assert(lhs == rhs);
+        return false;
+      }
+      redex_assert(rhs_case);
+      return *lhs_case < *rhs_case;
+    }
+    case EDGE_THROW: {
+      auto* lhs_info = lhs->throw_info();
+      auto* rhs_info = rhs->throw_info();
+      redex_assert(lhs_info != nullptr);
+      redex_assert(rhs_info != nullptr);
+      auto* lhs_catch = lhs_info->catch_type;
+      auto* rhs_catch = rhs_info->catch_type;
+      if (lhs_catch == nullptr) {
+        if (rhs_catch == nullptr) {
+          redex_assert(lhs == rhs);
+          return false;
+        }
+        return true;
+      }
+      if (rhs_catch == nullptr) {
+        return false;
+      }
+      return compare_dextypes(lhs_catch, rhs_catch);
+    }
+    case EDGE_GHOST:
+      return false;
+    case EDGE_TYPE_SIZE:
+      not_reached();
+    }
+    not_reached(); // For GCC.
+  });
+  return succs;
+}
+
+// This is the technical source-of-truth recursive implementation.
+template <typename BlockStartFn, typename EdgeFn, typename BlockEndFn>
+void visit_in_order_rec(const ControlFlowGraph* cfg,
+                        const BlockStartFn& block_start_fn,
+                        const EdgeFn& edge_fn,
+                        const BlockEndFn& block_end_fn) {
+  // Do not rely on `blocks()`, as there are no ordering guarantees. For now,
+  // do a simple DFS with explicitly ordered edges.
+
+  UnorderedSet<Block*> visited;
+  self_recursive_fn(
+      [&](auto self, Block* cur) {
+        if (visited.count(cur)) {
+          return;
+        }
+        visited.insert(cur);
+
+        block_start_fn(cur);
+
+        for (const auto* e : get_sorted_edges(cur)) {
+          if (e->type() == EDGE_GHOST) {
+            continue;
+          }
+          edge_fn(cur, e);
+          self(self, e->target());
+        }
+
+        block_end_fn(cur);
+      },
+      cfg->entry_block());
+
+  redex_assert(visited.size() == cfg->num_blocks());
+}
+
+// This is the iterative implementation for stack-size reasons. It is
+// compared in a test against the recursive version.
+template <typename BlockStartFn, typename EdgeFn, typename BlockEndFn>
+void visit_in_order(const ControlFlowGraph* cfg,
+                    const BlockStartFn& block_start_fn,
+                    const EdgeFn& edge_fn,
+                    const BlockEndFn& block_end_fn) {
+  UnorderedSet<Block*> visited;
+
+  struct StackFrame {
+    Block* cur{nullptr}; // The handled block.
+    Edge* edge{nullptr}; // Edge to use for edge_fn.
+    bool initial{true}; // Is this the start of the recursive call?
+    StackFrame(Block* cur, Edge* edge, bool initial)
+        : cur(cur), edge(edge), initial(initial) {}
+  };
+  std::stack<StackFrame> stack;
+  stack.emplace(cfg->entry_block(), nullptr, true);
+
+  while (!stack.empty()) {
+    auto* cur = stack.top().cur;
+
+    if (stack.top().initial) {
+      if (visited.count(cur)) {
+        stack.pop();
+        continue;
+      }
+      visited.insert(cur);
+
+      block_start_fn(cur);
+
+      stack.top().initial = false;
+
+      auto sorted = get_sorted_edges(cur);
+      for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+        auto edge = *it;
+        if (edge->type() == EDGE_GHOST) {
+          continue;
+        }
+        stack.emplace(edge->target(), nullptr, true);
+        stack.emplace(cur, edge, false);
+      }
+    } else {
+      auto* edge = stack.top().edge;
+      stack.pop();
+      if (edge != nullptr) {
+        edge_fn(cur, edge);
+      } else {
+        block_end_fn(cur);
+      }
+    }
+  }
+
+  assert_log(visited.size() == cfg->num_blocks(),
+             "%zu vs %zu",
+             visited.size(),
+             cfg->num_blocks());
+}
+
+} // namespace impl
+
+struct InsertResult {
+  size_t block_count;
+  std::string serialized;
+  std::string serialized_idom_map;
+  bool profile_success;
+  size_t normalized_count;
+  size_t denormalized_count;
+  size_t elided_vals;
+  size_t unelided_vals;
+};
+
+// Source data for a profile = interaction. Three options per interactions:
+// * Nothing (std::nullopt)
+// * A string that denotes a serialized profile, and an error value, in case
+//   the profile does nto match the CFG.
+// * A general default value.
+using ProfileData =
+    std::variant<std::nullopt_t,
+                 std::pair<std::string, boost::optional<SourceBlock::Val>>,
+                 SourceBlock::Val>;
+
+InsertResult insert_source_blocks(const DexString* method,
+                                  ControlFlowGraph* cfg,
+                                  const std::vector<ProfileData>& profiles = {},
+                                  bool serialize = true,
+                                  bool insert_after_excs = false);
+
+InsertResult insert_source_blocks(DexMethod* method,
+                                  ControlFlowGraph* cfg,
+                                  const std::vector<ProfileData>& profiles = {},
+                                  bool serialize = true,
+                                  bool insert_after_excs = false);
+
+InsertResult insert_custom_source_blocks(
+    const DexString* method,
+    ControlFlowGraph* cfg,
+    const std::vector<ProfileData>& profiles = {},
+    bool serialize = true,
+    bool insert_after_excs = false,
+    bool enable_fuzzing = false,
+    bool must_be_cold = false);
+
+UnorderedMap<Block*, uint32_t> insert_custom_source_blocks_get_indegrees(
+    const DexString* method,
+    ControlFlowGraph* cfg,
+    const std::vector<ProfileData>& profiles = {},
+    bool serialize = true,
+    bool insert_after_excs = false,
+    bool enable_fuzzing = false);
+
+struct SourceBlockMetric {
+  size_t hot_block_count{0};
+  size_t cold_block_count{0};
+  size_t hot_throw_cold_count{0};
+};
+
+SourceBlockMetric gather_source_block_metrics(ControlFlowGraph* cfg);
+
+void fix_chain_violations(ControlFlowGraph* cfg);
+
+void fix_idom_violations(ControlFlowGraph* cfg);
+
+void fix_hot_method_cold_entry_violations(ControlFlowGraph* cfg);
+
+bool has_source_block_positive_val(const SourceBlock* sb);
+
+bool has_source_block_undefined_val(const SourceBlock* sb);
+
+size_t compute_method_violations(const call_graph::Graph& call_graph,
+                                 const Scope& scope);
+
+void scale_source_blocks(cfg::Block* block);
+
+inline bool has_source_blocks(const cfg::Block* b) {
+  for (const auto& mie : *b) {
+    if (mie.type == MFLOW_SOURCE_BLOCK) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline std::vector<const SourceBlock*> gather_source_blocks(
+    const cfg::Block* b) {
+  std::vector<const SourceBlock*> ret;
+  for (const auto& mie : *b) {
+    if (mie.type != MFLOW_SOURCE_BLOCK) {
+      continue;
+    }
+    for (auto* sb = mie.src_block.get(); sb != nullptr; sb = sb->next.get()) {
+      ret.push_back(sb);
+    }
+  }
+  return ret;
+}
+
+inline std::vector<SourceBlock*> gather_source_blocks(cfg::Block* b) {
+  std::vector<SourceBlock*> ret;
+  for (const auto& mie : *b) {
+    if (mie.type != MFLOW_SOURCE_BLOCK) {
+      continue;
+    }
+    for (auto* sb = mie.src_block.get(); sb != nullptr; sb = sb->next.get()) {
+      ret.push_back(sb);
+    }
+  }
+  return ret;
+}
+
+template <typename Fn>
+inline void foreach_source_block(cfg::Block* b, const Fn& fn) {
+  for (const auto& mie : *b) {
+    if (mie.type != MFLOW_SOURCE_BLOCK) {
+      continue;
+    }
+    for (auto* sb = mie.src_block.get(); sb != nullptr; sb = sb->next.get()) {
+      fn(sb);
+    }
+  }
+}
+template <typename Fn>
+inline void foreach_source_block(const cfg::Block* b, const Fn& fn) {
+  for (const auto& mie : *b) {
+    if (mie.type != MFLOW_SOURCE_BLOCK) {
+      continue;
+    }
+    for (auto* sb = mie.src_block.get(); sb != nullptr; sb = sb->next.get()) {
+      fn(sb);
+    }
+  }
+}
+
+inline SourceBlock* get_first_source_block(cfg::Block* b) {
+  for (const auto& mie : *b) {
+    if (mie.type != MFLOW_SOURCE_BLOCK) {
+      continue;
+    }
+    return mie.src_block.get();
+  }
+  return nullptr;
+}
+inline const SourceBlock* get_first_source_block(const cfg::Block* b) {
+  for (const auto& mie : *b) {
+    if (mie.type != MFLOW_SOURCE_BLOCK) {
+      continue;
+    }
+    return mie.src_block.get();
+  }
+  return nullptr;
+}
+
+inline bool is_not_cold(cfg::Block* b) {
+  auto* sb = get_first_source_block(b);
+  if (sb == nullptr) {
+    // Conservatively assume that missing SBs mean no profiling data.
+    return true;
+  }
+  return sb->foreach_val_early([](const auto& v) { return v && v->val > 0; });
+}
+
+inline bool maybe_hot(cfg::Block* b, float threshold = 0.0f) {
+  auto* sb = get_first_source_block(b);
+  if (sb == nullptr) {
+    // Conservatively assume that missing SBs mean no profiling data.
+    return true;
+  }
+  return sb->foreach_val_early([&](const auto& v) {
+    return !v || (v->val > 0 && v->appear100 >= threshold);
+  });
+}
+
+inline bool is_hot(cfg::Block* b, float threshold = 0.0f) {
+  auto* sb = get_first_source_block(b);
+  if (sb == nullptr) {
+    // Conservatively assume that missing SBs mean no profiling data.
+    return false;
+  }
+  return sb->foreach_val_early([threshold](const auto& v) {
+    return v && v->val > 0 && v->appear100 >= threshold;
+  });
+}
+
+// If a method's entry block is hot, consider this method is hot.
+inline bool method_is_hot(const DexMethod* method, float threshold = 0.0f) {
+  const auto& cfg = method->get_code()->cfg();
+  return is_hot(cfg.entry_block(), threshold);
+}
+
+// If a method's entry block may be hot, consider this method may be hot.
+inline bool method_maybe_hot(const DexMethod* method, float threshold = 0.0f) {
+  const auto& cfg = method->get_code()->cfg();
+  return maybe_hot(cfg.entry_block(), threshold);
+}
+
+// If a method's entry block is not cold, consider this method is not cold.
+inline bool method_is_not_cold(const DexMethod* method) {
+  const auto& cfg = method->get_code()->cfg();
+  return is_not_cold(cfg.entry_block());
+}
+
+template <typename Iterator>
+inline SourceBlock* find_between(const Iterator& start, const Iterator& end) {
+  auto it = std::find_if(start, end,
+                         [](auto& e) { return e.type == MFLOW_SOURCE_BLOCK; });
+  return it != end ? it->src_block.get() : nullptr;
+}
+
+inline SourceBlock* get_last_source_block_before(cfg::Block* b,
+                                                 const IRList::iterator& it) {
+  auto* sb = find_between(IRList::reverse_iterator(it), b->rend());
+  return sb != nullptr ? sb->get_last_in_chain() : nullptr;
+}
+inline const SourceBlock* get_last_source_block_before(
+    const cfg::Block* b, const IRList::const_iterator& it) {
+  auto* sb = find_between(IRList::const_reverse_iterator(it), b->rend());
+  return sb != nullptr ? sb->get_last_in_chain() : nullptr;
+}
+
+inline SourceBlock* get_first_source_block_after(cfg::Block* b,
+                                                 const IRList::iterator& it) {
+  auto* sb = find_between(it, b->end());
+  return sb != nullptr ? sb : nullptr;
+}
+inline const SourceBlock* get_first_source_block_after(
+    const cfg::Block* b, const IRList::const_iterator& it) {
+  auto* sb = find_between(it, b->end());
+  return sb != nullptr ? sb : nullptr;
+}
+
+inline SourceBlock* get_first_source_block(cfg::ControlFlowGraph* cfg) {
+  for (auto* b : cfg->blocks()) {
+    auto* sb = get_first_source_block(b);
+    if (sb != nullptr) {
+      return sb;
+    }
+  }
+  return nullptr;
+}
+
+inline SourceBlock* get_first_source_block(IRCode* code) {
+  if (code->cfg_built()) {
+    return get_first_source_block(&code->cfg());
+  } else {
+    for (const auto& mie : *code) {
+      if (mie.type != MFLOW_SOURCE_BLOCK) {
+        continue;
+      }
+      return mie.src_block.get();
+    }
+    return nullptr;
+  }
+}
+
+inline void get_hot_cold_units(cfg::ControlFlowGraph& cfg,
+                               uint32_t& hot,
+                               uint32_t& cold) {
+  hot = 0;
+  cold = 0;
+  for (auto* block : cfg.blocks()) {
+    if (is_hot(block)) {
+      hot += block->estimate_code_units();
+    } else {
+      cold += block->estimate_code_units();
+    }
+  }
+}
+
+template <typename BlockType, typename SourceBlockType>
+inline SourceBlockType* get_last_source_block_impl(BlockType* b) {
+  static_assert(
+      std::is_same_v<std::remove_const_t<BlockType>, cfg::Block> &&
+      std::is_same_v<std::remove_const_t<SourceBlockType>, SourceBlock>);
+
+  auto rit = std::find_if(b->rbegin(), b->rend(), [](const auto& mie) {
+    return mie.type == MFLOW_SOURCE_BLOCK;
+  });
+
+  if (rit == b->rend()) {
+    return nullptr;
+  }
+
+  return rit->src_block.get();
+}
+
+inline SourceBlock* get_last_source_block(cfg::Block* b) {
+  return get_last_source_block_impl<cfg::Block, SourceBlock>(b);
+}
+inline const SourceBlock* get_last_source_block(const cfg::Block* b) {
+  return get_last_source_block_impl<const cfg::Block, const SourceBlock>(b);
+}
+
+// This helper gets the last source block in a block if it is after a throw,
+// otherwise returns a nullptr
+inline SourceBlock* get_last_source_block_if_after_throw(cfg::Block* b) {
+  for (auto it = b->rbegin(); it != b->rend(); it++) {
+    if (it->type == MFLOW_OPCODE && opcode::is_throw(it->insn->opcode())) {
+      return nullptr;
+    }
+    if (it->type == MFLOW_SOURCE_BLOCK) {
+      return it->src_block.get();
+    }
+  }
+  return nullptr;
+}
+
+IRList::iterator find_first_block_insert_point(cfg::Block* b);
+
+namespace normalize {
+
+size_t num_interactions(const cfg::ControlFlowGraph& cfg,
+                        const SourceBlock* sb);
+
+inline float get_factor(SourceBlock* dominating,
+                        SourceBlock* dominated,
+                        size_t idx) {
+  float caller_val;
+  {
+    if (dominating == nullptr) {
+      return NAN;
+    }
+    auto val = dominating->get_val(idx);
+    if (!val) {
+      return NAN;
+    }
+    caller_val = *val;
+  }
+  if (caller_val == 0) {
+    return 0.0f;
+  }
+
+  float callee_val;
+  {
+    if (dominated == nullptr) {
+      return NAN;
+    }
+    auto val = dominated->get_val(idx);
+    if (!val) {
+      return NAN;
+    }
+    callee_val = *val;
+  }
+  if (callee_val == 0) {
+    return 0.0f;
+  }
+
+  // Expectation would be that callee_val >= caller_val. But tracking might
+  // not be complete.
+
+  // This will normalize to the value at the dominating source block.
+  return caller_val / callee_val;
+}
+
+inline void normalize(SourceBlock* sb, size_t idx, float factor) {
+  sb->apply_at(idx, [&](auto& val) {
+    if (val) {
+      val->val *= factor;
+    }
+  });
+}
+
+inline void normalize(SourceBlock* dominating,
+                      SourceBlock* dominated,
+                      size_t interactions) {
+  for (size_t i = 0; i != interactions; ++i) {
+    auto sb_factor = get_factor(dominating, dominated, i);
+    normalize(dominated, i, sb_factor);
+  }
+}
+
+inline void normalize(ControlFlowGraph& cfg,
+                      SourceBlock* dominating,
+                      SourceBlock* dominated,
+                      size_t interactions) {
+  if (interactions == 0) {
+    return;
+  }
+  std::vector<float> factors;
+  factors.reserve(interactions);
+  for (size_t i = 0; i != interactions; ++i) {
+    factors.push_back(get_factor(dominating, dominated, i));
+  }
+  for (auto* b : cfg.blocks()) {
+    source_blocks::foreach_source_block(b, [&](auto* sb) {
+      for (size_t i = 0; i != interactions; ++i) {
+        normalize(sb, i, factors[i]);
+      }
+    });
+  }
+}
+
+inline void normalize(ControlFlowGraph& cfg,
+                      SourceBlock* dominating,
+                      size_t interactions) {
+  // Assume that integrity is guaranteed, so that val at entry is
+  // dominating all blocks.
+  normalize(cfg, dominating, get_first_source_block(cfg.entry_block()),
+            interactions);
+}
+
+} // namespace normalize
+
+void track_source_block_coverage(ScopedMetrics& sm,
+                                 const DexStoresVector& stores);
+
+class SourceBlockConsistencyCheck;
+SourceBlockConsistencyCheck& get_sbcc();
+
+struct ViolationsHelper {
+  struct ViolationsHelperImpl;
+  std::unique_ptr<ViolationsHelperImpl> impl;
+  bool track_intermethod_violations{false};
+  bool print_all_violations{false};
+  bool ignore_undefined{false};
+
+  enum class Violation {
+    kHotImmediateDomNotHot = 0,
+    kChainAndDom = 1,
+    kUncoveredSourceBlocks = 2,
+    kHotMethodColdEntry = 3,
+    kHotNoHotPred = 4,
+    KHotAllChildrenCold = 5,
+    ViolationSize = 6,
+  };
+
+  ViolationsHelper(Violation v,
+                   const Scope& scope,
+                   size_t top_n,
+                   std::vector<std::string> to_vis,
+                   bool track_intermethod_violations,
+                   bool print_all_violations,
+                   bool ignore_undefined);
+  ~ViolationsHelper();
+
+  void process(ScopedMetrics* sm);
+  void silence();
+
+  ViolationsHelper(ViolationsHelper&& other) noexcept;
+  ViolationsHelper& operator=(ViolationsHelper&& rhs) noexcept;
+};
+
+size_t compute(ViolationsHelper::Violation v,
+               cfg::ControlFlowGraph& cfg,
+               bool ignore_undefined = false);
+
+SourceBlock* get_first_source_block_of_method(const DexMethod* m);
+
+SourceBlock* get_any_first_source_block_of_methods(
+    const std::vector<const DexMethod*>& methods);
+
+void insert_synthetic_source_blocks_in_method(
+    DexMethod* method,
+    const std::function<std::unique_ptr<SourceBlock>()>& source_block_creator);
+
+void adjust_block_hits_with_appear100_threshold(
+    ControlFlowGraph* cfg, int32_t block_appear100_threshold);
+
+} // namespace source_blocks
