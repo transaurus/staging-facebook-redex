@@ -14,7 +14,7 @@ yarn install --frozen-lockfile
 
 # --- Build ---
 echo "[INFO] Running build..."
-yarn build
+rm -rf build/ && yarn build
 
 echo "[INFO] Verifying build output..."
 if [ -d "build" ] && [ "$(ls -A build)" ]; then
