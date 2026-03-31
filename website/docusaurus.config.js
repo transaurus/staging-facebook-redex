@@ -11,12 +11,16 @@ const darkCodeTheme = require('prism-react-renderer').themes.dracula;
 // With JSDoc @type annotations, IDEs can provide config autocompletion
 /** @type {import('@docusaurus/types').DocusaurusConfig} */
 (module.exports = {
+  i18n: {
+    defaultLocale: "en",
+    locales: ["en", "zh-Hans"],
+  },
   title: 'Redex',
   tagline: 'An Android Bytecode Optimizer',
   url: 'https://fbredex.com',
   baseUrl: '/',
-  onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'throw',
+  onBrokenLinks: 'warn',
+  onBrokenMarkdownLinks: "warn",
   trailingSlash: true,
   favicon: 'img/favicon.png',
   organizationName: 'facebook',

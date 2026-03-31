@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunkstaticdocs_starter=globalThis.webpackChunkstaticdocs_starter||[]).push([[4420],{48648(e){e.exports=JSON.parse('{"tags":[{"label":"release","permalink":"/zh-Hans/blog/tags/release","count":5},{"label":"redex","permalink":"/zh-Hans/blog/tags/redex","count":1}]}')}}]);

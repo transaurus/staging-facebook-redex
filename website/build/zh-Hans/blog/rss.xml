@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+    <channel>
+        <title>Redex Blog</title>
+        <link>https://fbredex.com/zh-Hans/blog/</link>
+        <description>Redex Blog</description>
+        <lastBuildDate>Thu, 18 Sep 2025 00:00:00 GMT</lastBuildDate>
+        <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
+        <generator>https://github.com/jpmonette/feed</generator>
+        <language>zh-Hans</language>
+        <item>
+            <title><![CDATA[v2025.09.18 Release]]></title>
+            <link>https://fbredex.com/zh-Hans/blog/2025-09-18-release/</link>
+            <guid>https://fbredex.com/zh-Hans/blog/2025-09-18-release/</guid>
+            <pubDate>Thu, 18 Sep 2025 00:00:00 GMT</pubDate>
+            <description><![CDATA[Optimizations]]></description>
+            <content:encoded><![CDATA[<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="optimizations">Optimizations<a href="https://fbredex.com/zh-Hans/blog/2025-09-18-release/#optimizations" class="hash-link" aria-label="Direct link to Optimizations" title="Direct link to Optimizations" translate="no">​</a></h2>
+<p>This release brings Kotlin default arguments optimization in Constant Propagation.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="other-improvements">Other improvements<a href="https://fbredex.com/zh-Hans/blog/2025-09-18-release/#other-improvements" class="hash-link" aria-label="Direct link to Other improvements" title="Direct link to Other improvements" translate="no">​</a></h2>
+<ul>
+<li class="">More adoptions of the new unordered container type.</li>
+<li class="">Reducing Redex memory usage (via inliner’s new max_reduced_size option).</li>
+<li class="">JarLoader improvements for fuzzing.</li>
+</ul>]]></content:encoded>
+            <category>release</category>
+        </item>
+        <item>
+            <title><![CDATA[v2025.03.31 Release]]></title>
+            <link>https://fbredex.com/zh-Hans/blog/2025-03-31-release/</link>
+            <guid>https://fbredex.com/zh-Hans/blog/2025-03-31-release/</guid>
+            <pubDate>Mon, 31 Mar 2025 00:00:00 GMT</pubDate>
+            <description><![CDATA[Optimizations]]></description>
+            <content:encoded><![CDATA[<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="optimizations">Optimizations<a href="https://fbredex.com/zh-Hans/blog/2025-03-31-release/#optimizations" class="hash-link" aria-label="Direct link to Optimizations" title="Direct link to Optimizations" translate="no">​</a></h2>
+<p>This release brings enhancements to existing optimizations:</p>
+<ul>
+<li class=""><code>BranchPrefixHoisting</code> runs more often, hoisting more instructions.</li>
+<li class="">Improvements to inlining, inlining almost 1% more callsites while reducing code-size overall.</li>
+<li class="">Improvements to source blocks for merged classes.</li>
+<li class="">New pass <code>InsertDebugInfoPass</code> to insert artificial debug info for incoming code that is missing line numbers.</li>
+<li class="">Improvements to constant propagation analyzers to evaluate package names.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="other-improvements">Other improvements<a href="https://fbredex.com/zh-Hans/blog/2025-03-31-release/#other-improvements" class="hash-link" aria-label="Direct link to Other improvements" title="Direct link to Other improvements" translate="no">​</a></h2>
+<ul>
+<li class="">Improvements to <code>.pro</code> parsing logic and dex loading logic (not expected to change application perf).</li>
+</ul>]]></content:encoded>
+            <category>release</category>
+        </item>
+        <item>
+            <title><![CDATA[v2024.10.31 Release]]></title>
+            <link>https://fbredex.com/zh-Hans/blog/2024-10-31-release/</link>
+            <guid>https://fbredex.com/zh-Hans/blog/2024-10-31-release/</guid>
+            <pubDate>Thu, 31 Oct 2024 00:00:00 GMT</pubDate>
+            <description><![CDATA[Optimizations]]></description>
+            <content:encoded><![CDATA[<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="optimizations">Optimizations<a href="https://fbredex.com/zh-Hans/blog/2024-10-31-release/#optimizations" class="hash-link" aria-label="Direct link to Optimizations" title="Direct link to Optimizations" translate="no">​</a></h2>
+<p>This is a relatively small incremental release bringing two new optimizations:</p>
+<ul>
+<li class="">A new resource inlining pass, inlining universally constant resources values directly in the code, eliminating expensive resource lookups. This first implementation only considers colors, ints and bools, but does not yet consider strings.</li>
+<li class="">Eliminating unused arguments in true virtual methods. This reduces method invocation overhead for virtual methods.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="other-improvements">Other improvements<a href="https://fbredex.com/zh-Hans/blog/2024-10-31-release/#other-improvements" class="hash-link" aria-label="Direct link to Other improvements" title="Direct link to Other improvements" translate="no">​</a></h2>
+<ul>
+<li class="">Support for <code>-assumevalues</code> in ProGuard specifications, as supported by R8. This unlocks additional optimizations in Redex.</li>
+</ul>]]></content:encoded>
+            <category>release</category>
+        </item>
+        <item>
+            <title><![CDATA[v2024.08.31 Release]]></title>
+            <link>https://fbredex.com/zh-Hans/blog/2024-08-31-release/</link>
+            <guid>https://fbredex.com/zh-Hans/blog/2024-08-31-release/</guid>
+            <pubDate>Sat, 31 Aug 2024 00:00:00 GMT</pubDate>
+            <description><![CDATA[Optimizations]]></description>
+            <content:encoded><![CDATA[<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="optimizations">Optimizations<a href="https://fbredex.com/zh-Hans/blog/2024-08-31-release/#optimizations" class="hash-link" aria-label="Direct link to Optimizations" title="Direct link to Optimizations" translate="no">​</a></h2>
+<p>This release bundles a few improved optimizations that improve code size and performance:</p>
+<ul>
+<li class="">Relax init optimization that inlines the constructor calls at object instantiation site. As a result, we can also remove the constructor method from the class.</li>
+<li class="">By reordering classes in <code>InterdexPass</code>, we made dexes more dense after Halfnosis pass and empty dexes will be left behind and can be removed by the newly introduced <code>DexRemovalPass</code>.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="better-engineering--reliability-improvements">Better Engineering &amp; Reliability Improvements<a href="https://fbredex.com/zh-Hans/blog/2024-08-31-release/#better-engineering--reliability-improvements" class="hash-link" aria-label="Direct link to Better Engineering &amp; Reliability Improvements" title="Direct link to Better Engineering &amp; Reliability Improvements" translate="no">​</a></h2>
+<ul>
+<li class="">Improved dead resource elimination, to bring parity between <code>.apk</code> and <code>.aab</code> builds for removed resources.</li>
+<li class="">Classes using the <code>ServiceLoader</code> Java APIs will now be kept by Redex; keep rules are no longer necessary.</li>
+<li class="">Class renaming improvements to better identify class names used by layout files and string references.</li>
+<li class="">Improved annotation handling in <code>SingleImplPass</code>.</li>
+</ul>]]></content:encoded>
+            <category>release</category>
+        </item>
+        <item>
+            <title><![CDATA[v2024.05.31 Release]]></title>
+            <link>https://fbredex.com/zh-Hans/blog/2024-05-31-release/</link>
+            <guid>https://fbredex.com/zh-Hans/blog/2024-05-31-release/</guid>
+            <pubDate>Fri, 31 May 2024 00:00:00 GMT</pubDate>
+            <description><![CDATA[Optimizations]]></description>
+            <content:encoded><![CDATA[<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="optimizations">Optimizations<a href="https://fbredex.com/zh-Hans/blog/2024-05-31-release/#optimizations" class="hash-link" aria-label="Direct link to Optimizations" title="Direct link to Optimizations" translate="no">​</a></h2>
+<p>This release bundles a few improved optimizations that improve code size and performance:</p>
+<ul>
+<li class="">Improvements to object escape analysis and associated transformations (support for check-casts, returning parameters, true virtual and super invocations, comparing objects with null, and a whole new global cost function), resulting in fewer object allocations and more inlining.</li>
+<li class="">Streamlined treatment of system annotations (a conceptual cleanup effort that lead to a size reduction).</li>
+<li class="">Value numbering for branch conditions eliminating branches in code.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="build-speed--reliability--better-engineering">Build Speed / Reliability / Better Engineering<a href="https://fbredex.com/zh-Hans/blog/2024-05-31-release/#build-speed--reliability--better-engineering" class="hash-link" aria-label="Direct link to Build Speed / Reliability / Better Engineering" title="Direct link to Build Speed / Reliability / Better Engineering" translate="no">​</a></h2>
+<ul>
+<li class="">Improved precision of analysis for class references from layouts and XML attributes, preventing Redex from removing referenced classes.</li>
+<li class="">First steps towards addressing an ancient design bug in Redex causing improper handling of the <code>package-private</code> access modifier.</li>
+<li class="">Performance improvements to Redex infrastructure.</li>
+</ul>]]></content:encoded>
+            <category>release</category>
+        </item>
+        <item>
+            <title><![CDATA[Office Hours]]></title>
+            <link>https://fbredex.com/zh-Hans/blog/office-hours/</link>
+            <guid>https://fbredex.com/zh-Hans/blog/office-hours/</guid>
+            <pubDate>Wed, 26 Oct 2022 00:00:00 GMT</pubDate>
+            <description><![CDATA[!!! Redex Public Office Hour Coming on Wed. 10/26/2022 @2PM PST !!!]]></description>
+            <content:encoded><![CDATA[<p>!!! Redex Public Office Hour Coming on Wed. 10/26/2022 @2PM PST !!!</p>
+<p><a href="https://fb.zoom.us/j/92134545091?pwd=NDRZSEhQSXBpeEVxTUF4Y3NMYjU3dz09" target="_blank" rel="noopener noreferrer" class="">Zoom Meeting id: 921 3454 5091; passcode: 177943</a></p>
+<p>Please dial in to chat! We would love to learn how do you use Redex, what challenges are
+you facing, and how can we better help. We would like keep the 1st office hour to be more
+high level. If you have very specific questions, like how to build Redex, Github issue is still
+the best way to resolve it.</p>]]></content:encoded>
+            <category>redex</category>
+        </item>
+    </channel>
+</rss>
